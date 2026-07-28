@@ -1,0 +1,19 @@
+[package]
+name = "crown-relay"
+version = "0.1.0"
+edition = "2021"
+description = "Единый фронтер оплаченных вызовов (канистра ICP), не заморожен"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+serde = "1"  # деривель candid::Deserialize генерит пути ::serde
+
+[dev-dependencies]
+pocket-ic = "13"  # e2e на реальной IC-реплике (сервер 13.0.0 из комплекта dfx)
+
+# Над книгой не властен: ни crown-reduce, ни RPC. Индекс — по principal в
+# рантайме (не path-dep).

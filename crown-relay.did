@@ -1,0 +1,33 @@
+// Deploy-time overrides (testnet only): the index principal, the pusher
+// allowlist, and the game allowlist. On mainnet an override traps — the pinned
+// config is authoritative.
+type InitArgs = record {
+  index : principal;
+  allowlist : vec principal;
+  games : vec principal;
+};
+// A relayed request: a settlement/birth signature to ingest, or a game
+// signature request. `Birth`/`Settlement` both forward to `index.ingest(sig)` —
+// the index recognizes which it is; the two tags are for the caller's clarity.
+type Request = variant { Sign : SignReq; Birth : text; Settlement : text };
+// A game signature request: the target game and the pre-encoded call argument.
+// The relay is a dumb proxy — it forwards `request` verbatim and never inspects
+// the book or the verdict.
+type SignReq = record { game : principal; request : blob };
+// Outcome of `submit`. `Forwarded` carries the downstream reply verbatim.
+type SubmitResult = variant {
+  ForwardFailed;
+  NotAllowed;
+  UnknownGame;
+  RateLimited;
+  Forwarded : blob;
+  LowBudget;
+};
+service : (opt InitArgs) -> {
+  // Principal of crown-indexer. Free query.
+  get_index : () -> (principal) query;
+  // The single non-`query`: an allowlisted caller submits without cycles; the
+  // relay gates (allowlist → per-key rate → budget floor) and forwards with
+  // `INGEST_PRICE`/`SIGN_PRICE` attached. Dedup is the index's job, not the relay's.
+  submit : (Request) -> (SubmitResult);
+}

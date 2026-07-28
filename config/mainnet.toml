@@ -1,0 +1,15 @@
+# crown-relay — mainnet-профиль. На mainnet override init запрещён (trap).
+
+index_principal  = "PLACEHOLDER_indexer_mainnet_principal"
+cycle_floor      = 1_000_000_000_000
+ingest_price     = 13_700_000_000        # ≥ индексного
+sign_price       = 35_800_000_000        # ≥ игрового
+rate_limit       = 100                   # макс submit на ключ за окно (per-key cap, инв. #6)
+rate_window_secs = 60                    # окно rate-limit
+
+allowlist = ["PLACEHOLDER_pusher_principal"]
+
+# Игровые канистры — единственные допустимые цели `Sign` (защита бюджета от увода
+# на канистру атакующего). На mainnet override запрещён, так что здесь — финальный
+# список; плейсхолдер до P8 (пустой рантайм-набор = все `Sign` отклоняются).
+games = ["PLACEHOLDER_game_mainnet_principal"]

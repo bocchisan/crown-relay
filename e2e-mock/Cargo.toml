@@ -1,0 +1,16 @@
+# Mock downstream canister for the relay e2e — NOT part of crown-relay's package
+# (its own workspace root). Plays both roles the relay forwards to: the index
+# (`ingest`) and a game (`request_signature`), recording the attached cycles.
+[package]
+name = "mock-downstream"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"

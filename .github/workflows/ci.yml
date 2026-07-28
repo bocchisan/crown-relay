@@ -1,0 +1,31 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test
+
+      # Border (01-standards): единственный не-query — submit.
+      - name: single non-query is submit
+        run: |
+          # Count service methods only: a method returns "-> (...)", while the
+          # service constructor returns "-> {" — so "> (" matches every method's
+          # return arrow but not the `(opt InitArgs) -> {` constructor line (which
+          # otherwise inflated the count). The pattern avoids a leading '-' so grep
+          # never mistakes it for an option.
+          n="$(grep -cE '> \(' crown-relay.did)"
+          q="$(grep -cE 'query;?[[:space:]]*$' crown-relay.did)"
+          test "$((n - q))" -eq 1 || { echo ".did has non-query methods other than submit"; exit 1; }
+          grep -qE '^[[:space:]]*submit[[:space:]]*:' crown-relay.did

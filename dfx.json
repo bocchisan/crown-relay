@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "canisters": {
+    "crown-relay": {
+      "type": "rust",
+      "package": "crown-relay",
+      "candid": "crown-relay.did"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# crown-relay — devnet-профиль. Управляется (не заморожен).
+
+index_principal  = "aaaaa-aa"                               # principal crown-indexer (плейсхолдер; реальный — через init/P8)
+cycle_floor      = 1_000_000_000_000     # пол бюджета до форварда
+ingest_price     = 10_000_000_000        # ≥ индексного INGEST_PRICE
+sign_price       = 26_200_000_000        # ≥ игрового SIGN_PRICE (≈$0.036)
+rate_limit       = 10                    # макс submit на ключ за окно (per-key cap, инв. #6) — devnet
+
+rate_window_secs = 60                    # окно rate-limit
+
+# Allowlist — пушеры платформы (per-key rate-limit против утёкшего ключа).
+allowlist = ["eplld-sl4xf-ez7zc-nvvcs-6wm66-ie2hx-ojwvh-7dr75-pwewa-icrm7-iae"]
+
+# Игровые канистры — единственные допустимые цели `Sign`. Без этого allowlist
+# утёкший ключ увёл бы прикреплённые циклы на канистру атакующего. Реальные
+# principal'ы игр подаются через `init` на devnet (плейсхолдер по умолчанию).
+games = ["PLACEHOLDER_game_devnet_principal"]
