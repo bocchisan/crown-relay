@@ -1,4 +1,4 @@
-# Build artifacts — at any depth (root target/ and nested e2e-mock/e2e-mock/target/)
+# Build artifacts — at any depth.
 target/
 .dfx/
 .anchor/

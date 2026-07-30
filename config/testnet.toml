@@ -2,11 +2,17 @@
 
 index_principal  = "aaaaa-aa"                               # principal crown-indexer (плейсхолдер; реальный — через init/P8)
 cycle_floor      = 1_000_000_000_000     # пол бюджета до форварда
-ingest_price     = 10_000_000_000        # ≥ индексного INGEST_PRICE
+ingest_price     = 13_700_000_000        # ≥ индексного INGEST_PRICE
 sign_price       = 26_200_000_000        # ≥ игрового SIGN_PRICE (≈$0.036)
-rate_limit       = 10                    # макс submit на ключ за окно (per-key cap, инв. #6) — devnet
+root_price       = 1_000_000_000         # ≥ игрового ROOT_PRICE (аутентификация корня индекса)
 
-rate_window_secs = 60                    # окно rate-limit
+# Per-key cap (инв. #6) — в циклах, не в вызовах; обоснование — mainnet-профиль.
+# На devnet бюджеты вдесятеро меньше: настоящей нагрузки нет, а утёкший тестовый
+# ключ должен упираться в потолок быстро и заметно.
+burst_budget_cycles = 100_000_000_000      # ≈$0.14/мин на ключ
+burst_window_secs   = 60
+daily_budget_cycles = 10_000_000_000_000   # ≈$13.7/сут на ключ
+daily_window_secs   = 86_400
 
 # Allowlist — пушеры платформы (per-key rate-limit против утёкшего ключа).
 allowlist = ["eplld-sl4xf-ez7zc-nvvcs-6wm66-ie2hx-ojwvh-7dr75-pwewa-icrm7-iae"]

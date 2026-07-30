@@ -3,12 +3,19 @@
 //! signature requests. Not frozen — managed (allowlist, budget, index
 //! principal). Powerless over the book (architecture §6).
 //!
+//! It fronts exactly three calls, and the set is closed by type: `index.ingest`,
+//! and a game's `request_signature` / `push_root` (`GameCall`). All three are paid
+//! by the game/index at the far end, and the price of each is decided here, never
+//! by the caller.
+//!
 //! `submit` is the only non-`query`: `inspect_message` (allowlist + size) →
-//! allowlist → per-key rate → budget floor → forward with cycles. Nothing
-//! costly happens before every gate passes. `unwrap`/`expect`/`panic` are barred
-//! on the `submit` path; cycle arithmetic is `saturating_*`.
+//! allowlist → game target → relay budget floor → per-key budgets → forward with
+//! cycles. The relay's own floor is checked *before* the key is charged, so a
+//! submit refused for lack of relay balance does not also consume the key's day.
+//! Nothing costly happens before every gate passes. `unwrap`/`expect`/`panic` are
+//! barred on the `submit` path; cycle arithmetic is `saturating_*`.
 
-use admit::{admit, Admit, Window};
+use admit::{admit, Admit, Budgets, Limits};
 use candid::{CandidType, Deserialize, Encode, Principal};
 use ic_cdk::call::Call;
 use std::cell::RefCell;
@@ -20,34 +27,84 @@ pub mod config;
 /// Perimeter guard: the largest ingress arg accepted (a signature/request is
 /// small). Oversized messages are dropped by `inspect_message`, for free.
 const MAX_ARG_BYTES: usize = 8192;
-/// The game method a `Sign` request is forwarded to.
-const SIGN_METHOD: &str = "request_signature";
 
 thread_local! {
     static INDEX: RefCell<Principal> = const { RefCell::new(Principal::anonymous()) };
     static ALLOWLIST: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
-    /// The only canisters a `Sign` request may target (budget-drain guard).
+    /// The only canisters a `Game` call may target (budget-drain guard).
     static GAMES: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
-    static WINDOWS: RefCell<BTreeMap<Principal, Window>> = const { RefCell::new(BTreeMap::new()) };
+    static WINDOWS: RefCell<BTreeMap<Principal, Budgets>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-/// A relayed request: a settlement/birth signature to ingest, or a game
-/// signature request. `Birth`/`Settlement` both forward to `index.ingest(sig)` —
-/// the index recognizes which it is; the two tags are for the caller's clarity.
+/// The baked per-key limits, as the gate wants them (seconds → nanoseconds).
+fn limits() -> Limits {
+    Limits {
+        burst_window_ns: config::BURST_WINDOW_SECS.saturating_mul(1_000_000_000),
+        burst_budget: config::BURST_BUDGET_CYCLES,
+        daily_window_ns: config::DAILY_WINDOW_SECS.saturating_mul(1_000_000_000),
+        daily_budget: config::DAILY_BUDGET_CYCLES,
+    }
+}
+
+/// A relayed request: one signature to fold into the book, or one paid call to a
+/// game.
+///
+/// Ingest has a single tag, not two. `Settlement` and `Birth` were the same call
+/// with the same price to the same canister — the index recognizes which the
+/// transaction holds — so the distinction lived only in the caller's head, and a
+/// tag that changes nothing is a tag that can be wrong.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub enum Request {
-    Settlement(String),
-    Birth(String),
-    Sign(SignReq),
+    /// Fold one Solana signature — `index.ingest(signature)`.
+    Ingest(String),
+    /// A paid call to an allowlisted game canister.
+    Game(GameReq),
 }
 
-/// A game signature request: the target game and the pre-encoded call argument.
-/// The relay is a dumb proxy — it forwards `request` verbatim and never inspects
-/// the book or the verdict.
+/// A paid game call: which game, which of its paid entry points, and the
+/// pre-encoded argument. The relay is a dumb proxy — it forwards `arg` verbatim
+/// and never inspects the book, the verdict or the certificate.
 #[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct SignReq {
+pub struct GameReq {
     pub game: Principal,
-    pub request: Vec<u8>,
+    pub call: GameCall,
+    pub arg: Vec<u8>,
+}
+
+/// The game entry points the relay fronts — a closed enum, deliberately not a
+/// method name from the caller.
+///
+/// Price is a *function of the call*, so a caller can neither name a method the
+/// relay has no price for nor choose which price it pays. A free-form
+/// `(method, cycles)` pair would move both decisions to the caller and leave the
+/// per-call ceiling to the callee's discipline — that is, to the games, which are
+/// not frozen. Same reasoning as `RpcSources` in the index: the unwanted case is
+/// not rejected at runtime, it is not expressible.
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameCall {
+    /// `request_signature` — the paid pull of a scope's verdict signature.
+    RequestSignature,
+    /// `push_root` — the paid authentication of an index root (two BLS pairings,
+    /// which is why it cannot live on the game's free boundary; harness §6).
+    PushRoot,
+}
+
+impl GameCall {
+    /// The method this call forwards to.
+    fn method(self) -> &'static str {
+        match self {
+            GameCall::RequestSignature => "request_signature",
+            GameCall::PushRoot => "push_root",
+        }
+    }
+
+    /// The cycles attached to it — at least what the game charges.
+    fn price(self) -> u128 {
+        match self {
+            GameCall::RequestSignature => config::SIGN_PRICE,
+            GameCall::PushRoot => config::ROOT_PRICE,
+        }
+    }
 }
 
 /// Deploy-time overrides (testnet only): the index principal, the pusher
@@ -65,9 +122,15 @@ pub struct InitArgs {
 pub enum SubmitResult {
     Forwarded(Vec<u8>),
     NotAllowed,
-    /// A `Sign` request named a canister that is not an allowlisted game.
+    /// A `Game` request named a canister that is not an allowlisted game.
     UnknownGame,
+    /// Over the caller's per-key burst budget — clears within the burst window.
     RateLimited,
+    /// The caller spent its whole per-key daily budget. Unlike `RateLimited` this
+    /// does not clear in a minute: it is the cap on what one key can ever move,
+    /// and hitting it in normal operation means either the volume outgrew the
+    /// config or the key is not doing what you think (invariant #6).
+    KeyBudgetExhausted,
     LowBudget,
     ForwardFailed,
 }
@@ -98,7 +161,7 @@ fn configure(overrides: Option<InitArgs>) {
                 .collect();
             ALLOWLIST.with_borrow_mut(|a| *a = set);
             // Invalid/placeholder game principals are dropped → an empty set means
-            // every `Sign` is rejected (fail closed) until real games are supplied.
+            // every `Game` call is rejected (fail closed) until real games are supplied.
             let games = config::GAMES
                 .iter()
                 .filter_map(|s| Principal::from_text(s).ok())
@@ -132,8 +195,10 @@ fn inspect_message() {
 }
 
 /// The single non-`query`: an allowlisted caller submits without cycles; the
-/// relay gates (allowlist → game target → per-key rate → budget floor) and forwards
-/// with `INGEST_PRICE`/`SIGN_PRICE` attached. Dedup is the index's job, not the relay's.
+/// relay gates (allowlist → game target → relay budget floor → per-key budgets)
+/// and forwards with the price of the call attached
+/// (`INGEST_PRICE`/`SIGN_PRICE`/`ROOT_PRICE`). Dedup is the index's job, not the
+/// relay's.
 #[ic_cdk::update]
 async fn submit(request: Request) -> SubmitResult {
     let caller = ic_cdk::api::msg_caller();
@@ -146,13 +211,13 @@ async fn submit(request: Request) -> SubmitResult {
     }
     let allowed = ALLOWLIST.with_borrow(|a| a.contains(&caller));
 
-    // A `Sign` may only target an allowlisted game canister. Without this a leaked
-    // or rogue allowlisted key could point the attached cycles at a canister it
-    // controls and drain the budget. `Settlement`/`Birth` target the trusted INDEX.
+    // A `Game` call may only target an allowlisted game canister. Without this a
+    // leaked or rogue allowlisted key could point the attached cycles at a canister
+    // it controls and drain the budget. `Ingest` targets the trusted INDEX.
     // Gated behind `allowed` so a stranger sees `NotAllowed` (from `admit` below),
     // never probes the game set — and is rejected before consuming a rate token.
     if allowed {
-        if let Request::Sign(req) = &request {
+        if let Request::Game(req) = &request {
             if !GAMES.with_borrow(|g| g.contains(&req.game)) {
                 return SubmitResult::UnknownGame;
             }
@@ -160,31 +225,29 @@ async fn submit(request: Request) -> SubmitResult {
     }
 
     let (target, method, arg, price) = match &request {
-        Request::Settlement(sig) | Request::Birth(sig) => (
+        Request::Ingest(sig) => (
             INDEX.with_borrow(|i| *i),
             "ingest",
             Encode!(sig).unwrap_or_default(),
             config::INGEST_PRICE,
         ),
-        Request::Sign(req) => (
+        Request::Game(req) => (
             req.game,
-            SIGN_METHOD,
-            req.request.clone(),
-            config::SIGN_PRICE,
+            req.call.method(),
+            req.arg.clone(),
+            req.call.price(),
         ),
     };
 
     let now = ic_cdk::api::time();
     let balance = ic_cdk::api::canister_cycle_balance();
-    let window_ns = config::RATE_WINDOW_SECS.saturating_mul(1_000_000_000);
     let verdict = WINDOWS.with_borrow_mut(|w| {
         admit(
             allowed,
             w,
             caller,
             now,
-            window_ns,
-            config::RATE_LIMIT,
+            &limits(),
             balance,
             config::CYCLE_FLOOR,
             price,
@@ -193,11 +256,32 @@ async fn submit(request: Request) -> SubmitResult {
     match verdict {
         Admit::NotAllowed => return SubmitResult::NotAllowed,
         Admit::RateLimited => return SubmitResult::RateLimited,
+        Admit::KeyBudgetExhausted => return SubmitResult::KeyBudgetExhausted,
         Admit::LowBudget => return SubmitResult::LowBudget,
         Admit::Ok => {}
     }
 
     // Payment leaves the budget only now, after every gate passed.
+    //
+    // The key is charged the full `price` whether or not the callee accepts it,
+    // and the refund is deliberately **not** credited back. That looks like
+    // sloppy accounting — a memoized verdict signature is served free, a duplicate
+    // ingest accepts nothing, and those cycles return to this canister — but
+    // crediting them reopens exactly what invariant #6 exists to close.
+    //
+    // The budget is denominated in cycles to bound a leaked key's *total* damage.
+    // It only also bounds the *rate* because every call draws from it. Credit the
+    // refunds and a leaked key gets unlimited calls for free: it submits an
+    // already-applied signature over and over, is refunded every time, and each
+    // round still costs this canister its own execution plus an inter-canister
+    // call — a drain whose only stop would be `CYCLE_FLOOR`, i.e. the whole
+    // balance. Charging for the attempt keeps both bounds; the price of that is
+    // over-charging a key for work that turned out to be cheap, which costs
+    // availability of *our own* key and nothing else.
+    //
+    // (`crown-relay/tests/e2e.rs::per_key_burst_budget_caps_a_key` is what makes
+    // this real: its mock accepts no cycles, so a version that credited refunds
+    // let the key run past its burst cap.)
     match Call::unbounded_wait(target, method)
         .with_raw_args(&arg)
         .with_cycles(price)

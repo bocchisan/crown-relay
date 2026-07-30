@@ -1,24 +1,56 @@
+// The game entry points the relay fronts — a closed enum, deliberately not a
+// method name from the caller.
+// 
+// Price is a *function of the call*, so a caller can neither name a method the
+// relay has no price for nor choose which price it pays. A free-form
+// `(method, cycles)` pair would move both decisions to the caller and leave the
+// per-call ceiling to the callee's discipline — that is, to the games, which are
+// not frozen. Same reasoning as `RpcSources` in the index: the unwanted case is
+// not rejected at runtime, it is not expressible.
+type GameCall = variant {
+  // `request_signature` — the paid pull of a scope's verdict signature.
+  RequestSignature;
+  // `push_root` — the paid authentication of an index root (two BLS pairings,
+  // which is why it cannot live on the game's free boundary; harness §6).
+  PushRoot;
+};
+// A paid game call: which game, which of its paid entry points, and the
+// pre-encoded argument. The relay is a dumb proxy — it forwards `arg` verbatim
+// and never inspects the book, the verdict or the certificate.
+type GameReq = record { arg : blob; call : GameCall; game : principal };
 // Deploy-time overrides (testnet only): the index principal, the pusher
 // allowlist, and the game allowlist. On mainnet an override traps — the pinned
 // config is authoritative.
 type InitArgs = record {
+  games : vec principal;
   index : principal;
   allowlist : vec principal;
-  games : vec principal;
 };
-// A relayed request: a settlement/birth signature to ingest, or a game
-// signature request. `Birth`/`Settlement` both forward to `index.ingest(sig)` —
-// the index recognizes which it is; the two tags are for the caller's clarity.
-type Request = variant { Sign : SignReq; Birth : text; Settlement : text };
-// A game signature request: the target game and the pre-encoded call argument.
-// The relay is a dumb proxy — it forwards `request` verbatim and never inspects
-// the book or the verdict.
-type SignReq = record { game : principal; request : blob };
+// A relayed request: one signature to fold into the book, or one paid call to a
+// game.
+// 
+// Ingest has a single tag, not two. `Settlement` and `Birth` were the same call
+// with the same price to the same canister — the index recognizes which the
+// transaction holds — so the distinction lived only in the caller's head, and a
+// tag that changes nothing is a tag that can be wrong.
+type Request = variant {
+  // A paid call to an allowlisted game canister.
+  Game : GameReq;
+  // Fold one Solana signature — `index.ingest(signature)`.
+  Ingest : text;
+};
 // Outcome of `submit`. `Forwarded` carries the downstream reply verbatim.
 type SubmitResult = variant {
   ForwardFailed;
   NotAllowed;
+  // The caller spent its whole per-key daily budget. Unlike `RateLimited` this
+  // does not clear in a minute: it is the cap on what one key can ever move,
+  // and hitting it in normal operation means either the volume outgrew the
+  // config or the key is not doing what you think (invariant #6).
+  KeyBudgetExhausted;
+  // A `Game` request named a canister that is not an allowlisted game.
   UnknownGame;
+  // Over the caller's per-key burst budget — clears within the burst window.
   RateLimited;
   Forwarded : blob;
   LowBudget;
@@ -27,7 +59,9 @@ service : (opt InitArgs) -> {
   // Principal of crown-indexer. Free query.
   get_index : () -> (principal) query;
   // The single non-`query`: an allowlisted caller submits without cycles; the
-  // relay gates (allowlist → per-key rate → budget floor) and forwards with
-  // `INGEST_PRICE`/`SIGN_PRICE` attached. Dedup is the index's job, not the relay's.
+  // relay gates (allowlist → game target → relay budget floor → per-key budgets)
+  // and forwards with the price of the call attached
+  // (`INGEST_PRICE`/`SIGN_PRICE`/`ROOT_PRICE`). Dedup is the index's job, not the
+  // relay's.
   submit : (Request) -> (SubmitResult);
 }
