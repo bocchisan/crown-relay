@@ -2,7 +2,7 @@
 
 index_principal  = "aaaaa-aa"                               # principal crown-indexer (плейсхолдер; реальный — через init/P8)
 cycle_floor      = 1_000_000_000_000     # пол бюджета до форварда
-ingest_price     = 13_700_000_000        # ≥ индексного INGEST_PRICE
+ingest_price     = 17_000_000_000        # ≥ индексного INGEST_PRICE
 sign_price       = 26_200_000_000        # ≥ игрового SIGN_PRICE (≈$0.036)
 root_price       = 1_000_000_000         # ≥ игрового ROOT_PRICE (аутентификация корня индекса)
 

@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(PROFILE, "testnet");
         assert_eq!(INDEX, "aaaaa-aa");
         assert_eq!(CYCLE_FLOOR, 1_000_000_000_000);
-        assert_eq!(INGEST_PRICE, 13_700_000_000);
+        assert_eq!(INGEST_PRICE, 17_000_000_000);
         assert_eq!(SIGN_PRICE, 26_200_000_000);
         assert_eq!(ROOT_PRICE, 1_000_000_000);
         assert_eq!(BURST_BUDGET_CYCLES, 100_000_000_000);
