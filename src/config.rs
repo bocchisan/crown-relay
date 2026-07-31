@@ -1,7 +1,49 @@
 //! Baked network config (`build.rs` from `config/<profile>.toml`). Principals are
 //! text here and parsed at `init`; nothing network lives in code.
 
+use candid::Principal;
+use std::collections::BTreeSet;
+
 include!(concat!(env!("OUT_DIR"), "/config.rs"));
+
+/// Whether this build is the frozen-perimeter profile, where a placeholder in the
+/// config is an error rather than a value.
+pub fn strict() -> bool {
+    PROFILE == "mainnet"
+}
+
+/// Baked principal texts → the runtime set.
+///
+/// Off `mainnet` an unparseable entry (a placeholder) is dropped and the set is
+/// left short: that is what lets the repo be checked out and deployed before the
+/// real keys exist, and a short set only ever refuses — an empty `allowlist`
+/// admits nobody, an empty `games` rejects every game call (fail closed, `00 §6`).
+///
+/// On `mainnet` the same entry is an `Err`, and the caller traps on it. The
+/// difference is not strictness for its own sake: there the placeholder is
+/// indistinguishable at runtime from a deliberately emptied list, so the deploy
+/// would come up looking healthy and refuse every push — a config that was never
+/// filled in, reading as a relay that simply does not work. An emptied list stays
+/// expressible (it is `[]` in the config, and it parses), so the kill-switch the
+/// architecture describes is untouched; what stops being expressible is the
+/// unfilled one.
+pub fn principal_set(entries: &[&str], strict: bool) -> Result<BTreeSet<Principal>, String> {
+    let mut set = BTreeSet::new();
+    for e in entries {
+        match Principal::from_text(e) {
+            Ok(p) => {
+                set.insert(p);
+            }
+            Err(_) if strict => {
+                return Err(format!(
+                    "baked principal `{e}` is not a principal (mainnet requires real ones)"
+                ))
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(set)
+}
 
 /// The dearest single call the relay ever forwards. Over **all** of `GameCall`
 /// plus the ingest — a price left out here would be one a key cannot afford, and
@@ -52,6 +94,61 @@ mod tests {
         assert_eq!(ALLOWLIST.len(), 1);
         // The games allowlist is baked (a placeholder on devnet; real via `init`).
         assert_eq!(GAMES.len(), 1);
+        assert!(!strict(), "the testnet profile is not the frozen one");
+    }
+
+    /// A real principal parses on both profiles; the set is what the gate reads.
+    #[test]
+    fn real_principals_parse_on_either_profile() {
+        let entries = ["aaaaa-aa", "2vxsx-fae"];
+        for strict in [false, true] {
+            let set = principal_set(&entries, strict).expect("real principals");
+            assert_eq!(set.len(), 2);
+            assert!(set.contains(&Principal::management_canister()));
+            assert!(set.contains(&Principal::anonymous()));
+        }
+    }
+
+    /// Off the frozen profile a placeholder is dropped, and the set is left short:
+    /// short only ever refuses (an empty `allowlist` admits nobody, an empty
+    /// `games` rejects every game call), which is what a repo without real keys
+    /// should do.
+    #[test]
+    fn a_placeholder_is_dropped_off_the_frozen_profile() {
+        let entries = ["PLACEHOLDER_pusher_principal", "aaaaa-aa"];
+        let set = principal_set(&entries, false).expect("placeholders are values here");
+        assert_eq!(
+            set.len(),
+            1,
+            "the placeholder is dropped, the real key stays"
+        );
+        assert!(principal_set(&["PLACEHOLDER_x"], false)
+            .expect("still Ok")
+            .is_empty());
+    }
+
+    /// On the frozen profile the same placeholder is an error, and the caller
+    /// traps on it. Without this the deploy comes up looking healthy and refuses
+    /// every push — a config nobody filled in, reading as a relay that does not
+    /// work.
+    #[test]
+    fn a_placeholder_is_fatal_on_the_frozen_profile() {
+        let err = principal_set(&["aaaaa-aa", "PLACEHOLDER_game_mainnet_principal"], true)
+            .expect_err("mainnet requires real principals");
+        assert!(
+            err.contains("PLACEHOLDER_game_mainnet_principal"),
+            "the message must name the offending entry, got: {err}"
+        );
+    }
+
+    /// An *emptied* list stays expressible on the frozen profile — it is the
+    /// documented kill switch (`00 §6`: an empty `games` rejects every game call,
+    /// fail closed). Only the unfilled list stops being expressible.
+    #[test]
+    fn an_emptied_list_is_still_legal_when_frozen() {
+        assert!(principal_set(&[], true)
+            .expect("empty is a value")
+            .is_empty());
     }
 
     // **Нет теста «цены релея ≥ downstream», и это решение.** Он сравнивал

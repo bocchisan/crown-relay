@@ -152,20 +152,20 @@ fn configure(overrides: Option<InitArgs>) {
             GAMES.with_borrow_mut(|g| *g = args.games.into_iter().collect());
         }
         None => {
+            let strict = config::strict();
             let index = Principal::from_text(config::INDEX)
                 .unwrap_or_else(|_| ic_cdk::trap("baked index principal is invalid"));
             INDEX.with_borrow_mut(|i| *i = index);
-            let set = config::ALLOWLIST
-                .iter()
-                .filter_map(|s| Principal::from_text(s).ok())
-                .collect();
+            // Off mainnet a placeholder is dropped → a short set, which only ever
+            // refuses (fail closed). On mainnet it traps instead: a lifecycle hook
+            // is where a panic is a failed deploy rather than a wedged canister,
+            // and an unfilled list there is otherwise indistinguishable from a
+            // deliberately emptied one (`config::principal_set`).
+            let set = config::principal_set(config::ALLOWLIST, strict)
+                .unwrap_or_else(|e| ic_cdk::trap(&e));
             ALLOWLIST.with_borrow_mut(|a| *a = set);
-            // Invalid/placeholder game principals are dropped → an empty set means
-            // every `Game` call is rejected (fail closed) until real games are supplied.
-            let games = config::GAMES
-                .iter()
-                .filter_map(|s| Principal::from_text(s).ok())
-                .collect();
+            let games =
+                config::principal_set(config::GAMES, strict).unwrap_or_else(|e| ic_cdk::trap(&e));
             GAMES.with_borrow_mut(|g| *g = games);
         }
     }

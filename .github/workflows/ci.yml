@@ -14,6 +14,17 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # e2e гоняет настоящую IC-реплику и без сервера падает, а не пропускается —
+      # то есть без этого шага `cargo test` в CI красный. Версия сервера обязана
+      # совпадать с крейтом `pocket-ic` в Cargo.toml (13.0.0).
+      - name: pocket-ic server
+        run: |
+          curl -fsSL https://github.com/dfinity/pocketic/releases/download/13.0.0/pocket-ic-x86_64-linux.gz \
+            | gunzip > "$RUNNER_TEMP/pocket-ic"
+          chmod +x "$RUNNER_TEMP/pocket-ic"
+          "$RUNNER_TEMP/pocket-ic" --version
+          echo "POCKET_IC_BIN=$RUNNER_TEMP/pocket-ic" >> "$GITHUB_ENV"
+
       - name: test
         run: cargo test
 
@@ -29,3 +40,15 @@ jobs:
           q="$(grep -cE 'query;?[[:space:]]*$' crown-relay.did)"
           test "$((n - q))" -eq 1 || { echo ".did has non-query methods other than submit"; exit 1; }
           grep -qE '^[[:space:]]*submit[[:space:]]*:' crown-relay.did
+
+      # Тот же `.did` обязан совпадать с тем, что реально экспортирует wasm:
+      # иначе граница выше проверяется по файлу, который никто не сверял с кодом,
+      # и закрытость набора фронтируемых вызовов (`GameCall`) держится на честном
+      # слове. Тот же шаг, что у индекса.
+      - name: .did matches the wasm
+        run: |
+          cargo install candid-extractor --locked
+          rustup target add wasm32-unknown-unknown
+          cargo build --lib --release --target wasm32-unknown-unknown
+          candid-extractor target/wasm32-unknown-unknown/release/crown_relay.wasm > /tmp/gen.did
+          diff -u crown-relay.did /tmp/gen.did
