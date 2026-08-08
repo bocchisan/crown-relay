@@ -225,12 +225,24 @@ async fn submit(request: Request) -> SubmitResult {
     }
 
     let (target, method, arg, price) = match &request {
-        Request::Ingest(sig) => (
-            INDEX.with_borrow(|i| *i),
-            "ingest",
-            Encode!(sig).unwrap_or_default(),
-            config::INGEST_PRICE,
-        ),
+        Request::Ingest(sig) => {
+            // Refuse rather than forward what could not be encoded. The old
+            // `unwrap_or_default()` sent an **empty** argument on failure: the
+            // index rejects it, the call comes back `ForwardFailed`, and the key
+            // has already been charged the full price for a call that was
+            // malformed before it left. Encoding one `String` does not fail in
+            // practice — which is the point of saying so here instead of paying
+            // for the case where it does.
+            let Ok(arg) = Encode!(sig) else {
+                return SubmitResult::ForwardFailed;
+            };
+            (
+                INDEX.with_borrow(|i| *i),
+                "ingest",
+                arg,
+                config::INGEST_PRICE,
+            )
+        }
         Request::Game(req) => (
             req.game,
             req.call.method(),
